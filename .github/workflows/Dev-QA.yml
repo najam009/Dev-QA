@@ -9,14 +9,14 @@ on:
 env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
   ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-  EC2_APP_PATH: /home/${{ secrets.EC2_USER }}/app  # adjust if needed
+  EC2_APP_PATH: /home/${{ secrets.EC2_USER }}/S3bucket  # adjust to your folder on EC2
 
 jobs:
   build-and-deploy:
     name: Build on EC2, Push to ECR & Deploy (Dev)
     runs-on: ubuntu-latest
     outputs:
-      FULL_IMAGE_NAME: ${{ steps.set-image.outputs.FULL_IMAGE_NAME }}
+      FULL_IMAGE_NAME: ${{ steps.set-image.outputs.full_image }}
 
     steps:
     - name: Checkout code
@@ -33,8 +33,7 @@ jobs:
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Build & Push (remote on EC2)
-      id: remote-build
+    - name: Build & Push (on EC2)
       env:
         HOST: ${{ secrets.EC2_HOST }}
         USER: ${{ secrets.EC2_USER }}
@@ -44,30 +43,27 @@ jobs:
         AWS_REGION: ${{ env.AWS_REGION }}
         EC2_APP_PATH: ${{ env.EC2_APP_PATH }}
       run: |
-        IMAGE_TAG=dev-${{ github.run_number }}
-        FULL_IMAGE_NAME=$REGISTRY/$REPO:$IMAGE_TAG
-
-        echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
-        echo "FULL_IMAGE_NAME=$FULL_IMAGE_NAME" >> $GITHUB_ENV
-
         echo "$SSH_KEY" | base64 --decode > key.pem
         chmod 600 key.pem
 
-        LOGIN_PASSWORD=$(aws ecr get-login-password --region $AWS_REGION)
+        IMAGE_TAG=dev-${{ github.run_number }}
+        FULL_IMAGE_NAME=$REGISTRY/$REPO:$IMAGE_TAG
 
-        echo "🔧 Building on EC2: $FULL_IMAGE_NAME"
+        echo "FULL_IMAGE_NAME=$FULL_IMAGE_NAME" >> $GITHUB_ENV
+        echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
 
+        echo "Building image remotely on EC2: $FULL_IMAGE_NAME"
         ssh -o StrictHostKeyChecking=no -i key.pem $USER@$HOST "
-          echo '$LOGIN_PASSWORD' | docker login --username AWS --password-stdin $REGISTRY &&
+          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $REGISTRY &&
           cd $EC2_APP_PATH &&
           git fetch --all && git reset --hard origin/dev || true &&
           docker build -t $FULL_IMAGE_NAME . &&
           docker push $FULL_IMAGE_NAME
         "
 
-    - name: Set output for next job
+    - name: Set image name as job output
       id: set-image
-      run: echo "::set-output name=FULL_IMAGE_NAME::${FULL_IMAGE_NAME}"
+      run: echo "full_image=${FULL_IMAGE_NAME}" >> $GITHUB_OUTPUT
 
     - name: Deploy to EC2 (Dev)
       env:
@@ -101,7 +97,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Configure AWS credentials (runner)
+    - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
