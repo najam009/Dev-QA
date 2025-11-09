@@ -115,7 +115,7 @@ jobs:
         SSH_KEY: ${{ secrets.EC2_KEY }}
         IMAGE: ${{ needs.build-and-deploy.outputs.FULL_IMAGE_NAME }}
       run: |
-        echo "$SSH_KEY" | base64 --decode > key.pem
+        echo "$SSH_KEY" > key.pem
         chmod 600 key.pem
 
         echo "Deploying to QA EC2: $IMAGE"
