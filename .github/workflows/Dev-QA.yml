@@ -9,14 +9,15 @@ on:
 env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
   ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-  EC2_APP_PATH: /home/${{ secrets.EC2_USER }}/S3bucket  # adjust to your folder on EC2
+  # default EC2 app path — change if your Dockerfile is elsewhere on the EC2 instance
+  EC2_APP_PATH: /home/${{ secrets.EC2_USER }}/app
 
 jobs:
   build-and-deploy:
     name: Build on EC2, Push to ECR & Deploy (Dev)
     runs-on: ubuntu-latest
     outputs:
-      FULL_IMAGE_NAME: ${{ steps.set-image.outputs.full_image }}
+      FULL_IMAGE_NAME: ${{ steps.set-image.outputs.FULL_IMAGE_NAME }}
 
     steps:
     - name: Checkout code
@@ -29,11 +30,12 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Login to Amazon ECR
+    - name: Login to Amazon ECR (gets registry)
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Build & Push (on EC2)
+    - name: Build & Push (remote on EC2)
+      id: remote-build
       env:
         HOST: ${{ secrets.EC2_HOST }}
         USER: ${{ secrets.EC2_USER }}
@@ -43,43 +45,63 @@ jobs:
         AWS_REGION: ${{ env.AWS_REGION }}
         EC2_APP_PATH: ${{ env.EC2_APP_PATH }}
       run: |
-        echo "$SSH_KEY" | base64 --decode > key.pem
-        chmod 600 key.pem
-
+        # Prepare values
         IMAGE_TAG=dev-${{ github.run_number }}
         FULL_IMAGE_NAME=$REGISTRY/$REPO:$IMAGE_TAG
 
-        echo "FULL_IMAGE_NAME=$FULL_IMAGE_NAME" >> $GITHUB_ENV
+        # Save for later steps in same job (not cross-job)
         echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+        echo "FULL_IMAGE_NAME=$FULL_IMAGE_NAME" >> $GITHUB_ENV
 
-        echo "Building image remotely on EC2: $FULL_IMAGE_NAME"
-        ssh -o StrictHostKeyChecking=no -i key.pem $USER@$HOST "
-          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $REGISTRY &&
-          cd $EC2_APP_PATH &&
-          git fetch --all && git reset --hard origin/dev || true &&
-          docker build -t $FULL_IMAGE_NAME . &&
-          docker push $FULL_IMAGE_NAME
-        "
+        # Decode SSH key
+        echo "$SSH_KEY" | base64 --decode > key.pem
+        chmod 600 key.pem
 
-    - name: Set image name as job output
+        # Get ECR login password on runner (uses runner AWS creds configured above)
+        LOGIN_PASSWORD=$(aws ecr get-login-password --region $AWS_REGION)
+
+        echo "🔧 Building on EC2: $FULL_IMAGE_NAME"
+
+        # SSH into EC2 and build/push using the Dockerfile that exists on the EC2 host.
+        # NOTE: change EC2_APP_PATH above if your Dockerfile lives elsewhere.
+        ssh -o StrictHostKeyChecking=no -i key.pem $USER@$HOST \
+          "echo '$LOGIN_PASSWORD' | docker login --username AWS --password-stdin $REGISTRY && \
+           cd $EC2_APP_PATH && \
+           git fetch --all --prune && git reset --hard origin/dev || true && \
+           docker build -t $FULL_IMAGE_NAME . && \
+           docker push $FULL_IMAGE_NAME"
+
+        # expose FULL_IMAGE_NAME as a step output for job-level outputs
+        echo "::set-output name=FULL_IMAGE_NAME::$FULL_IMAGE_NAME"
+
+    - name: set-image
       id: set-image
-      run: echo "full_image=${FULL_IMAGE_NAME}" >> $GITHUB_OUTPUT
+      run: |
+        # propagate the FULL_IMAGE_NAME from the previous step's output if present,
+        # otherwise read from GITHUB_ENV variable (safety)
+        if [ -n "${{ steps.remote-build.outputs.FULL_IMAGE_NAME }}" ]; then
+          echo "::set-output name=FULL_IMAGE_NAME::${{ steps.remote-build.outputs.FULL_IMAGE_NAME }}"
+        else
+          # fallback (shouldn't be needed)
+          echo "::set-output name=FULL_IMAGE_NAME::${FULL_IMAGE_NAME}"
+        fi
 
     - name: Deploy to EC2 (Dev)
       env:
         HOST: ${{ secrets.EC2_HOST }}
         USER: ${{ secrets.EC2_USER }}
         SSH_KEY: ${{ secrets.EC2_KEY }}
+        IMAGE: ${{ jobs.build-and-deploy.outputs.FULL_IMAGE_NAME }}
       run: |
         echo "$SSH_KEY" | base64 --decode > key.pem
         chmod 600 key.pem
 
-        echo "Deploying to Dev EC2: $FULL_IMAGE_NAME"
+        echo "Deploying to Dev EC2: $IMAGE"
         ssh -o StrictHostKeyChecking=no -i key.pem $USER@$HOST "
-          docker pull $FULL_IMAGE_NAME &&
+          docker pull $IMAGE &&
           docker stop dev-container || true &&
           docker rm dev-container || true &&
-          docker run -d --name dev-container -p 3000:3000 $FULL_IMAGE_NAME
+          docker run -d --name dev-container -p 3000:3000 $IMAGE
         "
 
     - name: Auto merge dev → QA
@@ -97,14 +119,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Configure AWS credentials
+    - name: Configure AWS credentials (runner)
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Login to Amazon ECR
+    - name: Login to Amazon ECR (get registry)
       id: login-ecr-qa
       uses: aws-actions/amazon-ecr-login@v2
 
@@ -115,7 +137,7 @@ jobs:
         SSH_KEY: ${{ secrets.EC2_KEY }}
         IMAGE: ${{ needs.build-and-deploy.outputs.FULL_IMAGE_NAME }}
       run: |
-        echo "$SSH_KEY" > key.pem
+        echo "$SSH_KEY" | base64 --decode > key.pem
         chmod 600 key.pem
 
         echo "Deploying to QA EC2: $IMAGE"
