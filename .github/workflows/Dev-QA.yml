@@ -43,7 +43,7 @@ jobs:
         AWS_REGION: ${{ env.AWS_REGION }}
         EC2_APP_PATH: ${{ env.EC2_APP_PATH }}
       run: |
-        echo "$SSH_KEY" | base64 --decode > key.pem
+        echo "$SSH_KEY" > key.pem
         chmod 600 key.pem
 
         IMAGE_TAG=dev-${{ github.run_number }}
