@@ -1,1 +1,127 @@
+name: Dev-QA CI/CD
 
+on:
+  push:
+    branches:
+      - dev
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+  EC2_APP_PATH: /home/${{ secrets.EC2_USER }}/S3bucket  # adjust to your folder on EC2
+
+jobs:
+  build-and-deploy:
+    name: Build on EC2, Push to ECR & Deploy (Dev)
+    runs-on: ubuntu-latest
+    outputs:
+      FULL_IMAGE_NAME: ${{ steps.set-image.outputs.full_image }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials (runner)
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Build & Push (on EC2)
+      env:
+        HOST: ${{ secrets.EC2_HOST }}
+        USER: ${{ secrets.EC2_USER }}
+        SSH_KEY: ${{ secrets.EC2_KEY }}
+        REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        REPO: ${{ env.ECR_REPOSITORY }}
+        AWS_REGION: ${{ env.AWS_REGION }}
+        EC2_APP_PATH: ${{ env.EC2_APP_PATH }}
+      run: |
+        echo "$SSH_KEY" | base64 --decode > key.pem
+        chmod 600 key.pem
+
+        IMAGE_TAG=dev-${{ github.run_number }}
+        FULL_IMAGE_NAME=$REGISTRY/$REPO:$IMAGE_TAG
+
+        echo "FULL_IMAGE_NAME=$FULL_IMAGE_NAME" >> $GITHUB_ENV
+        echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+
+        echo "Building image remotely on EC2: $FULL_IMAGE_NAME"
+        ssh -o StrictHostKeyChecking=no -i key.pem $USER@$HOST "
+          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $REGISTRY &&
+          cd $EC2_APP_PATH &&
+          git fetch --all && git reset --hard origin/dev || true &&
+          docker build -t $FULL_IMAGE_NAME . &&
+          docker push $FULL_IMAGE_NAME
+        "
+
+    - name: Set image name as job output
+      id: set-image
+      run: echo "full_image=${FULL_IMAGE_NAME}" >> $GITHUB_OUTPUT
+
+    - name: Deploy to EC2 (Dev)
+      env:
+        HOST: ${{ secrets.EC2_HOST }}
+        USER: ${{ secrets.EC2_USER }}
+        SSH_KEY: ${{ secrets.EC2_KEY }}
+      run: |
+        echo "$SSH_KEY" | base64 --decode > key.pem
+        chmod 600 key.pem
+
+        echo "Deploying to Dev EC2: $FULL_IMAGE_NAME"
+        ssh -o StrictHostKeyChecking=no -i key.pem $USER@$HOST "
+          docker pull $FULL_IMAGE_NAME &&
+          docker stop dev-container || true &&
+          docker rm dev-container || true &&
+          docker run -d --name dev-container -p 3000:3000 $FULL_IMAGE_NAME
+        "
+
+    - name: Auto merge dev → QA
+      uses: devmasx/merge-branch@v1.4.0
+      with:
+        type: now
+        from_branch: dev
+        target_branch: QA
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  deploy-qa:
+    name: Deploy to QA (EC2)
+    needs: build-and-deploy
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr-qa
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Deploy to EC2 (QA)
+      env:
+        HOST: ${{ secrets.QA_EC2_HOST }}
+        USER: ${{ secrets.EC2_USER }}
+        SSH_KEY: ${{ secrets.EC2_KEY }}
+        IMAGE: ${{ needs.build-and-deploy.outputs.FULL_IMAGE_NAME }}
+      run: |
+        echo "$SSH_KEY" | base64 --decode > key.pem
+        chmod 600 key.pem
+
+        echo "Deploying to QA EC2: $IMAGE"
+        ssh -o StrictHostKeyChecking=no -i key.pem $USER@$HOST "
+          docker pull $IMAGE &&
+          docker stop qa-container || true &&
+          docker rm qa-container || true &&
+          docker run -d --name qa-container -p 3001:3001 $IMAGE
+        "
