@@ -78,7 +78,9 @@ jobs:
 
     steps:
       - name: Trigger QA branch deployment
-        uses: peter-evans/workflow-dispatch@v2
+        uses: peter-evans/repository-dispatch@v3
         with:
-          workflow: CI/CD to EC2 via Docker & ECR
-          ref: qa
+          token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          event-type: trigger-qa-deploy
+          client-payload: '{"ref": "qa", "workflow": "CI/CD to EC2 via Docker & ECR"}'
