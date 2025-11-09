@@ -1,0 +1,74 @@
+name: CI/CD to EC2 via Docker & ECR
+
+on:
+  push:
+    branches:
+      - dev
+      - qa
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+  EC2_HOST: ${{ secrets.EC2_HOST }}
+  EC2_USER: ${{ secrets.EC2_USER }}
+  EC2_KEY: ${{ secrets.EC2_KEY }}
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        run: |
+          IMAGE_TAG=${GITHUB_REF##*/}
+          docker build --build-arg APP_PORT=${{ github.ref == 'refs/heads/dev' && echo 3000 || echo 3001 }} -t $ECR_REPOSITORY:$IMAGE_TAG .
+          docker tag $ECR_REPOSITORY:$IMAGE_TAG ${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push ${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:$IMAGE_TAG
+
+      - name: Deploy to EC2
+        env:
+          PRIVATE_KEY: ${{ secrets.EC2_KEY }}
+          HOST: ${{ secrets.EC2_HOST }}
+          USER: ${{ secrets.EC2_USER }}
+          REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          echo "$PRIVATE_KEY" > private_key.pem
+          chmod 600 private_key.pem
+
+          PORT=$( [ "${GITHUB_REF##*/}" == "dev" ] && echo 3000 || echo 3001 )
+          TAG=${GITHUB_REF##*/}
+
+          ssh -o StrictHostKeyChecking=no -i private_key.pem $USER@$HOST << EOF
+            aws ecr get-login-password --region $AWS_REGION | sudo docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
+            sudo docker pull ${{ steps.login-ecr.outputs.registry }}/$REPOSITORY:$TAG
+            sudo docker stop $REPOSITORY-$TAG || true
+            sudo docker rm $REPOSITORY-$TAG || true
+            sudo docker run -d -p $PORT:$PORT --name $REPOSITORY-$TAG ${{ steps.login-ecr.outputs.registry }}/$REPOSITORY:$TAG
+          EOF
+
+  promote-to-qa:
+    needs: build-and-deploy
+    if: github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Trigger QA branch
+        uses: peter-evans/workflow-dispatch@v2
+        with:
+          workflow: CI/CD to EC2 via Docker & ECR
+          ref: qa
