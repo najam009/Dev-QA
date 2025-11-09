@@ -2,12 +2,17 @@ name: Dev-QA CI/CD
 
 on:
   push:
-    branches:
-      - dev
+    branches: [dev]
   workflow_dispatch:
 
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+  IMAGE_TAG: dev-${{ github.run_number }}
+
 jobs:
-  build-and-deploy:
+  build-and-push:
+    name: Build & Push Docker Image
     runs-on: ubuntu-latest
 
     steps:
@@ -19,40 +24,50 @@ jobs:
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ secrets.AWS_REGION }}
+        aws-region: ${{ env.AWS_REGION }}
 
     - name: Login to Amazon ECR
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Build Docker image
+    - name: Build and push Docker image to ECR
       run: |
-        IMAGE_TAG=dev-${{ github.run_number }}
-        docker build -t $ECR_REPOSITORY:$IMAGE_TAG .
-        docker tag $ECR_REPOSITORY:$IMAGE_TAG ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:$IMAGE_TAG
-        echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+        FULL_IMAGE=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+        echo "Building and pushing $FULL_IMAGE ..."
+        docker build -t $FULL_IMAGE .
+        docker push $FULL_IMAGE
+        echo "FULL_IMAGE=$FULL_IMAGE" >> $GITHUB_ENV
 
-    - name: Push image to ECR
-      run: |
-        docker push ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:$IMAGE_TAG
+  deploy-dev:
+    name: Deploy to Dev EC2
+    needs: build-and-push
+    runs-on: ubuntu-latest
 
-    - name: Deploy to EC2 (Dev)
+    steps:
+    - name: Deploy container on EC2 (Dev)
       env:
         HOST: ${{ secrets.EC2_HOST }}
         USER: ${{ secrets.EC2_USER }}
         SSH_KEY: ${{ secrets.EC2_KEY }}
-        IMAGE: ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+        FULL_IMAGE: ${{ env.FULL_IMAGE }}
       run: |
         echo "$SSH_KEY" | base64 --decode > key.pem
         chmod 600 key.pem
+
+        echo "Deploying $FULL_IMAGE to Dev..."
         ssh -o StrictHostKeyChecking=no -i key.pem $USER@$HOST "
-          docker pull $IMAGE &&
+          docker pull $FULL_IMAGE &&
           docker stop dev-container || true &&
           docker rm dev-container || true &&
-          docker run -d --name dev-container -p 3000:3000 $IMAGE
+          docker run -d --name dev-container -p 3000:3000 $FULL_IMAGE
         "
 
-    - name: Auto merge dev → QA
+  merge-dev-to-qa:
+    name: Auto merge Dev → QA
+    needs: deploy-dev
+    runs-on: ubuntu-latest
+    steps:
+    - name: Merge dev into QA
       uses: devmasx/merge-branch@v1.4.0
       with:
         type: now
@@ -62,37 +77,36 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   deploy-qa:
-    needs: build-and-deploy
+    name: Deploy to QA EC2
+    needs: merge-dev-to-qa
     runs-on: ubuntu-latest
-    steps:
-    - name: Checkout QA branch
-      uses: actions/checkout@v4
-      with:
-        ref: QA
 
+    steps:
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ secrets.AWS_REGION }}
+        aws-region: ${{ env.AWS_REGION }}
 
     - name: Login to Amazon ECR
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Deploy to EC2 (QA)
+    - name: Deploy container on EC2 (QA)
       env:
-        HOST: ${{ secrets.EC2_HOST }}
+        HOST: ${{ secrets.QA_EC2_HOST }}
         USER: ${{ secrets.EC2_USER }}
         SSH_KEY: ${{ secrets.EC2_KEY }}
-        IMAGE: ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+        FULL_IMAGE: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
       run: |
         echo "$SSH_KEY" | base64 --decode > key.pem
         chmod 600 key.pem
+
+        echo "Deploying $FULL_IMAGE to QA..."
         ssh -o StrictHostKeyChecking=no -i key.pem $USER@$HOST "
-          docker pull $IMAGE &&
+          docker pull $FULL_IMAGE &&
           docker stop qa-container || true &&
           docker rm qa-container || true &&
-          docker run -d --name qa-container -p 3001:3001 $IMAGE
+          docker run -d --name qa-container -p 3001:3001 $FULL_IMAGE
         "
