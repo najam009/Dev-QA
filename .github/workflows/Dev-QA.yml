@@ -9,91 +9,97 @@ on:
 env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
   ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-  EC2_DEV_APP_PATH: /home/${{ secrets.EC2_USER }}/app  # Dockerfile path on Dev EC2
-  EC2_QA_APP_PATH: /home/${{ secrets.EC2_USER }}/app   # Dockerfile path on QA EC2
+  EC2_DEV_APP_PATH: /home/${{ secrets.EC2_USER }}/app
+  EC2_QA_APP_PATH: /home/${{ secrets.EC2_USER }}/app
 
 jobs:
   build-and-deploy-dev:
     name: Build & Deploy Dev EC2
     runs-on: ubuntu-latest
     outputs:
-      FULL_IMAGE_NAME: ${{ steps.remote-build.outputs.FULL_IMAGE_NAME }}
+      FULL_IMAGE_NAME: ${{ steps.set-image.outputs.FULL_IMAGE_NAME }}
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
 
-    - name: Login to Amazon ECR
-      id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v2
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Build & Push Docker Image on Dev EC2
-      id: remote-build
-      env:
-        HOST: ${{ secrets.EC2_HOST }}
-        USER: ${{ secrets.EC2_USER }}
-        SSH_KEY: ${{ secrets.EC2_KEY }}
-        REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        REPO: ${{ env.ECR_REPOSITORY }}
-        AWS_REGION: ${{ env.AWS_REGION }}
-        EC2_APP_PATH: ${{ env.EC2_DEV_APP_PATH }}
-      run: |
-        IMAGE_TAG=dev-${{ github.run_number }}
-        FULL_IMAGE_NAME=$REGISTRY/$REPO:$IMAGE_TAG
+      - name: Build & Push Docker Image on Dev EC2
+        id: remote-build
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+          USER: ${{ secrets.EC2_USER }}
+          SSH_KEY: ${{ secrets.EC2_KEY }}
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          REPO: ${{ env.ECR_REPOSITORY }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+          EC2_APP_PATH: ${{ env.EC2_DEV_APP_PATH }}
+        run: |
+          IMAGE_TAG=dev-${{ github.run_number }}
+          FULL_IMAGE_NAME=$REGISTRY/$REPO:$IMAGE_TAG
 
-        echo "FULL_IMAGE_NAME=$FULL_IMAGE_NAME" >> $GITHUB_ENV
-        echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+          # Save for use in the workflow
+          echo "FULL_IMAGE_NAME=$FULL_IMAGE_NAME" >> $GITHUB_ENV
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
 
-        # Use raw PEM key (not base64)
-        echo "$SSH_KEY" > key.pem
-        chmod 600 key.pem
+          # Use raw PEM key
+          echo "$SSH_KEY" > key.pem
+          chmod 600 key.pem
 
-        echo "🔧 Building & pushing Docker image on Dev EC2: $FULL_IMAGE_NAME"
+          echo "🔧 Building & pushing Docker image on Dev EC2: $FULL_IMAGE_NAME"
 
-        ssh -o StrictHostKeyChecking=no -i key.pem $USER@$HOST "
-          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $REGISTRY &&
-          cd $EC2_APP_PATH &&
-          git fetch --all --prune &&
-          git reset --hard origin/dev || true &&
-          docker build -t $FULL_IMAGE_NAME . &&
-          docker push $FULL_IMAGE_NAME
-        "
+          ssh -o StrictHostKeyChecking=no -i key.pem $USER@$HOST "
+            aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $REGISTRY &&
+            cd $EC2_APP_PATH &&
+            git fetch --all --prune &&
+            git reset --hard origin/dev || true &&
+            docker build -t $FULL_IMAGE_NAME . &&
+            docker push $FULL_IMAGE_NAME
+          "
 
-        echo "::set-output name=FULL_IMAGE_NAME::$FULL_IMAGE_NAME"
+          # Save as step output for job-level outputs
+          echo "FULL_IMAGE_NAME=$FULL_IMAGE_NAME" >> $GITHUB_OUTPUT
 
-    - name: Deploy to Dev EC2
-      env:
-        HOST: ${{ secrets.EC2_HOST }}
-        USER: ${{ secrets.EC2_USER }}
-        SSH_KEY: ${{ secrets.EC2_KEY }}
-        IMAGE: ${{ steps.remote-build.outputs.FULL_IMAGE_NAME }}
-      run: |
-        echo "$SSH_KEY" > key.pem
-        chmod 600 key.pem
+      - name: set-image
+        id: set-image
+        run: |
+          echo "::set-output name=FULL_IMAGE_NAME::${FULL_IMAGE_NAME}"
 
-        echo "🚀 Deploying Docker image on Dev EC2: $IMAGE"
-        ssh -o StrictHostKeyChecking=no -i key.pem $USER@$HOST "
-          docker pull $IMAGE &&
-          docker stop dev-container || true &&
-          docker rm dev-container || true &&
-          docker run -d --name dev-container -p 3000:3000 $IMAGE
-        "
+      - name: Deploy to Dev EC2
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+          USER: ${{ secrets.EC2_USER }}
+          SSH_KEY: ${{ secrets.EC2_KEY }}
+          IMAGE: ${{ steps.set-image.outputs.FULL_IMAGE_NAME }}
+        run: |
+          echo "$SSH_KEY" > key.pem
+          chmod 600 key.pem
+          echo "🚀 Deploying Docker image on Dev EC2: $IMAGE"
+          ssh -o StrictHostKeyChecking=no -i key.pem $USER@$HOST "
+            docker pull $IMAGE &&
+            docker stop dev-container || true &&
+            docker rm dev-container || true &&
+            docker run -d --name dev-container -p 3000:3000 $IMAGE
+          "
 
-    - name: Auto merge dev → QA
-      uses: devmasx/merge-branch@v1.4.0
-      with:
-        type: now
-        from_branch: dev
-        target_branch: QA
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Auto merge dev → QA
+        uses: devmasx/merge-branch@v1.4.0
+        with:
+          type: now
+          from_branch: dev
+          target_branch: QA
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   deploy-qa:
     name: Deploy to QA EC2
@@ -101,30 +107,29 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
 
-    - name: Login to Amazon ECR
-      uses: aws-actions/amazon-ecr-login@v2
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Deploy Docker image to QA EC2
-      env:
-        HOST: ${{ secrets.QA_EC2_HOST }}
-        USER: ${{ secrets.EC2_USER }}
-        SSH_KEY: ${{ secrets.EC2_KEY }}
-        IMAGE: ${{ needs.build-and-deploy-dev.outputs.FULL_IMAGE_NAME }}
-      run: |
-        echo "$SSH_KEY" > key.pem
-        chmod 600 key.pem
-
-        echo "🚀 Deploying Docker image on QA EC2: $IMAGE"
-        ssh -o StrictHostKeyChecking=no -i key.pem $USER@$HOST "
-          docker pull $IMAGE &&
-          docker stop qa-container || true &&
-          docker rm qa-container || true &&
-          docker run -d --name qa-container -p 3001:3001 $IMAGE
-        "
+      - name: Deploy Docker image to QA EC2
+        env:
+          HOST: ${{ secrets.QA_EC2_HOST }}
+          USER: ${{ secrets.EC2_USER }}
+          SSH_KEY: ${{ secrets.EC2_KEY }}
+          IMAGE: ${{ needs.build-and-deploy-dev.outputs.FULL_IMAGE_NAME }}
+        run: |
+          echo "$SSH_KEY" > key.pem
+          chmod 600 key.pem
+          echo "🚀 Deploying Docker image on QA EC2: $IMAGE"
+          ssh -o StrictHostKeyChecking=no -i key.pem $USER@$HOST "
+            docker pull $IMAGE &&
+            docker stop qa-container || true &&
+            docker rm qa-container || true &&
+            docker run -d --name qa-container -p 3001:3001 $IMAGE
+          "
