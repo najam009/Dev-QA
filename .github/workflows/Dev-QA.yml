@@ -71,7 +71,7 @@ jobs:
         USER: ${{ secrets.EC2_USER }}
         SSH_KEY: ${{ secrets.EC2_KEY }}
       run: |
-        echo "$SSH_KEY" | base64 --decode > key.pem
+        echo "$SSH_KEY" > key.pem
         chmod 600 key.pem
 
         echo "Deploying to Dev EC2: $FULL_IMAGE_NAME"
