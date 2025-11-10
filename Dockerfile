@@ -16,6 +16,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy rest of your project files
 COPY . .
 
+# ✅ Create the folder to avoid watchdog FileNotFoundError
+RUN mkdir -p /home/najam/S3bucket
+
 # Set app port
 ARG APP_PORT=3000
 ENV APP_PORT=$APP_PORT
