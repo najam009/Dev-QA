@@ -1,4 +1,4 @@
 boto3
-psycopg2
+psycopg2-binary
 watchdog
 python-dotenv
