@@ -2,9 +2,11 @@
 FROM python:3.10-slim
 
 WORKDIR /app
-COPY . .
 
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
 
 ARG APP_PORT=3000
 ENV APP_PORT=$APP_PORT
