@@ -12,7 +12,7 @@ load_dotenv()
 # ---------- CONFIGURATION ----------
 FOLDER_TO_WATCH = "/home/najam/S3bucket/"
 BUCKET_NAME = os.getenv("BUCKET_NAME")
-AWS_REGION = os.getenv("ap-south-1")
+AWS_REGION = os.getenv("AWS_REGION")
 HOST = os.getenv("HOST")
 DBNAME = os.getenv("DBNAME")
 USER = os.getenv("USERR")
