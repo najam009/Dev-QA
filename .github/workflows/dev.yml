@@ -79,7 +79,7 @@ jobs:
           key: ${{ secrets.EC2_KEY }}
           script: |
             # Ensure docker permissions (use sudo if needed)
-            sudo docker pull $IMAGE_URI
+            sudo docker pull 633458675961.dkr.ecr.ap-south-1.amazonaws.com/devqa:latest
             sudo docker stop myapp || true
             sudo docker rm myapp || true
             sudo docker run -d --name myapp -p 3000:3000 $IMAGE_URI
