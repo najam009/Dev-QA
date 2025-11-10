@@ -1,11 +1,12 @@
 # Base image
 FROM python:3.10-slim
 
-WORKDIR /app
-COPY . .
+WORKDIR /
 
-RUN pip install --upgrade pip
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+COPY ..
 
 ARG APP_PORT=3000
 ENV APP_PORT=$APP_PORT
