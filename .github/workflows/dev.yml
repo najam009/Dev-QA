@@ -30,15 +30,9 @@ jobs:
         with:
           registry-type: private
 
-      # ✅ Create the .env file from the secret
-      - name: Create .env file from GitHub Secret
-        run: |
-          echo "${{ secrets.ENV }}" > .env
-          echo ".env file created successfully"
-
       - name: Build Docker image
         run: |
-          docker build --env-file .env -t $ECR_REPOSITORY:latest .
+          docker build -t $ECR_REPOSITORY:latest .
 
       - name: Tag and Push Docker image
         id: push-image
@@ -84,13 +78,19 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_KEY }}
           script: |
-            # Login to ECR and pull the latest image
+            # Login to ECR
             aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | sudo docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
 
+            # Pull and restart container
             sudo docker pull 633458675961.dkr.ecr.ap-south-1.amazonaws.com/devqa:latest
             sudo docker stop myapp || true
             sudo docker rm myapp || true
 
-            # ✅ Pass environment variables from the secret .env file
+            # ✅ Create .env file from the secret and use it at runtime
             echo "${{ secrets.ENV }}" > .env
-            sudo docker run -d --env-file .env --name myapp -p 3000:3000 633458675961.dkr.ecr.ap-south-1.amazonaws.com/devqa:latest
+
+            sudo docker run -d \
+              --env-file .env \
+              --name myapp \
+              -p 3000:3000 \
+              633458675961.dkr.ecr.ap-south-1.amazonaws.com/devqa:latest
