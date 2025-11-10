@@ -16,7 +16,7 @@ jobs:
     name: Build and Push Docker Image to ECR
     runs-on: ubuntu-latest
     outputs:
-      image_uri: ${{ steps.set-image-uri.outputs.IMAGE_URI }}
+      image_uri: ${{ steps.set-image-uri.outputs.image_uri }}
 
     steps:
       - name: Checkout code
@@ -33,14 +33,17 @@ jobs:
         run: |
           docker build -t $ECR_REPOSITORY:latest .
 
-      - name: Tag and Push Docker image
+      - name: Tag Docker image
         run: |
           docker tag $ECR_REPOSITORY:latest ${{ steps.login-ecr.outputs.registry }}/${ECR_REPOSITORY}:latest
+
+      - name: Push Docker image to ECR
+        run: |
           docker push ${{ steps.login-ecr.outputs.registry }}/${ECR_REPOSITORY}:latest
 
       - name: Set image URI output
         id: set-image-uri
-        run: echo "IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/${ECR_REPOSITORY}:latest" >> $GITHUB_OUTPUT
+        run: echo "image_uri=${{ steps.login-ecr.outputs.registry }}/${ECR_REPOSITORY}:latest" >> $GITHUB_OUTPUT
 
   promote-to-qa:
     name: Promote dev → qa
@@ -77,10 +80,10 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_KEY }}
-          env:
-            IMAGE_URI: ${{ needs.build-and-push.outputs.image_uri }}
           script: |
             sudo docker pull $IMAGE_URI
             sudo docker stop myapp || true
             sudo docker rm myapp || true
             sudo docker run -d --name myapp -p 3000:3000 $IMAGE_URI
+        env:
+          IMAGE_URI: ${{ needs.build-and-push.outputs.image_uri }}
