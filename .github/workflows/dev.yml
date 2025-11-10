@@ -89,8 +89,4 @@ jobs:
             # ✅ Create .env file from the secret and use it at runtime
             echo "${{ secrets.ENV }}" > .env
 
-            sudo docker run -d \
-              --env-file .env \
-              --name myapp \
-              -p 3000:3000 \
-              633458675961.dkr.ecr.ap-south-1.amazonaws.com/devqa:latest
+            sudo docker run -d --name myapp -p 3000:3000 633458675961.dkr.ecr.ap-south-1.amazonaws.com/devqa:latest
