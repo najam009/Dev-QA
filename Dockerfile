@@ -17,14 +17,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # ✅ Create the folder to avoid watchdog FileNotFoundError
-#RUN mkdir -p /home/najam/S3bucket
-sudo docker run -d \
-  --name myapp \
-  -p 3000:3000 \
-  --env-file .env \
-  -v /home/ubuntu/S3bucket:/home/najam/S3bucket \
-  633458675961.dkr.ecr.ap-south-1.amazonaws.com/devqa:latest
-
+RUN mkdir -p /home/najam/S3bucket
 
 # Set app port
 ARG APP_PORT=3000
