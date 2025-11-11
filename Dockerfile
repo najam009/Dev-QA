@@ -25,4 +25,4 @@ ENV APP_PORT=$APP_PORT
 EXPOSE $APP_PORT
 
 # Default run command
-CMD ["python", "s3_database.py"]
+CMD ["python","-u", "s3_database.py"]
