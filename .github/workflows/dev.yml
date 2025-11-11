@@ -95,7 +95,7 @@ jobs:
 
             sudo docker run -d \
               --name myapp \
-              -p 3000:3000 \
+              --network host \
               --env-file "$TEMP_ENV" \
               -v /home/najam/S3bucket:/home/najam/S3bucket \
               $IMAGE_URI
