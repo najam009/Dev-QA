@@ -26,8 +26,8 @@ DB_CONFIG = {
     "host": HOST,      # your EC2/RDS endpoint
     "dbname": DBNAME,
     "user": USER,
-    "password": "najam9",
-    "port": 5432
+    "password": PASSWORD,
+    "port": PORT
 }
 # ----------------------------------
 
