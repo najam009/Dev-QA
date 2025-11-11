@@ -79,21 +79,26 @@ jobs:
           key: ${{ secrets.EC2_KEY }}
           script: |
             # Login to ECR
-            aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | sudo docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+            aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | \
+              sudo docker login --username AWS --password-stdin \
+              ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
 
             # Pull and restart container
-            sudo docker pull 633458675961.dkr.ecr.ap-south-1.amazonaws.com/devqa:latest
+            IMAGE_URI=633458675961.dkr.ecr.ap-south-1.amazonaws.com/devqa:latest
+            sudo docker pull $IMAGE_URI
             sudo docker stop myapp || true
             sudo docker rm myapp || true
-            
-            # ✅ Create .env file from the secret and use it at runtime
-            echo "${{ secrets.ENV }}" > .env
+
+            # ✅ Create a temporary .env file for runtime-only credentials
+            TEMP_ENV=$(mktemp)
+            echo "${{ secrets.ENV }}" > "$TEMP_ENV"
+
             sudo docker run -d \
               --name myapp \
               -p 3000:3000 \
-              --env-file .env \
+              --env-file "$TEMP_ENV" \
               -v /home/najam/S3bucket:/home/najam/S3bucket \
-              633458675961.dkr.ecr.ap-south-1.amazonaws.com/devqa:latest
+              $IMAGE_URI
 
-
-  # sudo docker run -d --name myapp -p 3000:3000 --env-file .env 633458675961.dkr.ecr.ap-south-1.amazonaws.com/devqa:latest
+            # Delete temporary .env file immediately after container starts
+            rm -f "$TEMP_ENV"
