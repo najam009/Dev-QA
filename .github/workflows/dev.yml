@@ -1,4 +1,4 @@
-name: CI/CD Pipeline for dev
+name: CI/CD Pipeline for dev → qa
 
 on:
   push:
@@ -10,7 +10,7 @@ env:
   AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
   AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
   AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-  ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+  ECR_REPOSITORY: devqa   # ✅ fixed: your ECR repo name
 
 jobs:
   build-and-push:
@@ -27,41 +27,18 @@ jobs:
         with:
           registry-type: private
 
-      - name: Get next image version tag
-        id: get-tag
-        run: |
-          echo "Fetching existing image tags..."
-          EXISTING_TAGS=$(aws ecr list-images \
-            --repository-name $ECR_REPOSITORY \
-            --region $AWS_REGION \
-            --query 'imageIds[*].imageTag' \
-            --output text)
-
-          echo "Existing tags: $EXISTING_TAGS"
-
-          # Find last dev image tag
-          LATEST_NUM=$(echo "$EXISTING_TAGS" | grep -oE 'dev[0-9]+' | grep -oE '[0-9]+' | sort -n | tail -1)
-          if [ -z "$LATEST_NUM" ]; then
-            NEXT_TAG="dev1"
-          else
-            NEXT_NUM=$((LATEST_NUM + 1))
-            NEXT_TAG="dev${NEXT_NUM}"
-          fi
-
-          echo "Next image tag: $NEXT_TAG"
-          echo "IMAGE_TAG=$NEXT_TAG" >> $GITHUB_ENV
-
       - name: Build Docker image
         run: |
-          docker build -t $ECR_REPOSITORY:$IMAGE_TAG .
+          docker build -t $ECR_REPOSITORY:latest .
 
       - name: Tag and Push Docker image
         id: push-image
         run: |
-          IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:$IMAGE_TAG
-          docker tag $ECR_REPOSITORY:$IMAGE_TAG $IMAGE_URI
+          IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:latest
+          docker tag $ECR_REPOSITORY:latest $IMAGE_URI
           docker push $IMAGE_URI
           echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+          echo "✅ Pushed image to ECR: $IMAGE_URI"
 
   deploy-to-ec2:
     name: Deploy Docker container on EC2
@@ -78,45 +55,35 @@ jobs:
           script: |
             AWS_REGION=${{ secrets.AWS_REGION }}
             AWS_ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}
-            ECR_REPOSITORY=${{ secrets.ECR_REPOSITORY }}
-            IMAGE_TAG=${{ env.IMAGE_TAG }}
+            ECR_REPOSITORY=devqa
+            IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:latest
+
+            echo "Deploying $IMAGE_URI ..."
 
             # Login to ECR
             aws ecr get-login-password --region $AWS_REGION | \
               sudo docker login --username AWS --password-stdin \
               $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
 
-            IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
-            CONTAINER_NAME=myapp_$IMAGE_TAG
-
-            echo "Deploying new container: $CONTAINER_NAME using $IMAGE_URI"
-
             # Pull latest image
-            sudo docker pull $IMAGE_URI
+            echo "Pulling latest image..."
+            sudo docker pull $IMAGE_URI || { echo "❌ Pull failed"; exit 1; }
 
-            # Stop any running container with the base name "myapp"
-            RUNNING=$(sudo docker ps -q --filter "name=myapp")
-            if [ -n "$RUNNING" ]; then
-              echo "Stopping running containers..."
-              sudo docker stop $RUNNING
-            fi
+            # Stop old container (ignore if not running)
+            sudo docker stop myapp || true
+            sudo docker rm myapp || true
 
-            # ✅ Do NOT remove old containers — just stop them
-
-            # Create a temporary .env file
+            # Create temporary .env file for container environment
             TEMP_ENV=$(mktemp)
             echo "${{ secrets.ENV }}" > "$TEMP_ENV"
 
-            # Run new container with unique name
+            # Run new container
             sudo docker run -d \
-              --name $CONTAINER_NAME \
+              --name myapp \
               --network host \
               --env-file "$TEMP_ENV" \
               -v /home/najam/S3bucket:/home/najam/S3bucket \
-              $IMAGE_URI
+              $IMAGE_URI || { echo "❌ Container failed to start"; exit 1; }
 
-            # Clean up .env
             rm -f "$TEMP_ENV"
-
-            echo "✅ Deployed new container: $CONTAINER_NAME"
-            echo "All previous containers remain stopped."
+            echo "✅ Deployment complete!"
