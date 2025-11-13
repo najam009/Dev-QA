@@ -10,38 +10,69 @@ env:
   AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
   AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
   AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-  ECR_REPOSITORY: devqa   # ✅ fixed: your ECR repo name
+  ECR_REPOSITORY: devqa   # your ECR repo name
 
 jobs:
   build-and-push:
-    name: Build and Push Docker Image to ECR
+    name: Build and Push Versioned Docker Image to ECR
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
-        with:
-          registry-type: private
+
+      - name: Get next image version tag
+        id: get-tag
+        run: |
+          echo "Fetching existing image tags..."
+          EXISTING_TAGS=$(aws ecr list-images \
+            --repository-name $ECR_REPOSITORY \
+            --region $AWS_REGION \
+            --query 'imageIds[*].imageTag' \
+            --output text)
+
+          echo "Existing tags: $EXISTING_TAGS"
+
+          # Find the last dev image version
+          LATEST_NUM=$(echo "$EXISTING_TAGS" | grep -oE 'dev[0-9]+' | grep -oE '[0-9]+' | sort -n | tail -1)
+
+          if [ -z "$LATEST_NUM" ]; then
+            NEXT_TAG="dev1"
+          else
+            NEXT_NUM=$((LATEST_NUM + 1))
+            NEXT_TAG="dev${NEXT_NUM}"
+          fi
+
+          echo "Next tag is: $NEXT_TAG"
+          echo "IMAGE_TAG=$NEXT_TAG" >> $GITHUB_ENV
+          echo "✅ Next image tag: $NEXT_TAG"
 
       - name: Build Docker image
         run: |
-          docker build -t $ECR_REPOSITORY:latest .
+          docker build -t $ECR_REPOSITORY:$IMAGE_TAG .
 
-      - name: Tag and Push Docker image
+      - name: Tag and Push Docker image to ECR
         id: push-image
         run: |
-          IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:latest
-          docker tag $ECR_REPOSITORY:latest $IMAGE_URI
+          IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:$IMAGE_TAG
+          docker tag $ECR_REPOSITORY:$IMAGE_TAG $IMAGE_URI
           docker push $IMAGE_URI
           echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
           echo "✅ Pushed image to ECR: $IMAGE_URI"
 
   deploy-to-ec2:
-    name: Deploy Docker container on EC2
+    name: Deploy Versioned Docker container on EC2
     runs-on: ubuntu-latest
     needs: build-and-push
 
@@ -56,34 +87,41 @@ jobs:
             AWS_REGION=${{ secrets.AWS_REGION }}
             AWS_ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}
             ECR_REPOSITORY=devqa
-            IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:latest
+            IMAGE_TAG=${{ env.IMAGE_TAG }}
+            IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
+            CONTAINER_NAME=myapp_$IMAGE_TAG
 
-            echo "Deploying $IMAGE_URI ..."
+            echo "Deploying container: $CONTAINER_NAME from image: $IMAGE_URI"
 
             # Login to ECR
             aws ecr get-login-password --region $AWS_REGION | \
               sudo docker login --username AWS --password-stdin \
               $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
 
-            # Pull latest image
-            echo "Pulling latest image..."
-            sudo docker pull $IMAGE_URI || { echo "❌ Pull failed"; exit 1; }
+            # Pull latest versioned image
+            sudo docker pull $IMAGE_URI
 
-            # Stop old container (ignore if not running)
-            sudo docker stop myapp || true
-            sudo docker rm myapp || true
+            # Stop old myapp containers (but don't delete)
+            RUNNING=$(sudo docker ps -q --filter "name=myapp")
+            if [ -n "$RUNNING" ]; then
+              echo "Stopping old myapp containers..."
+              sudo docker stop $RUNNING
+            fi
 
-            # Create temporary .env file for container environment
+            # ✅ Old containers are stopped but not removed
+            echo "Old containers retained."
+
+            # Create a temporary .env file
             TEMP_ENV=$(mktemp)
             echo "${{ secrets.ENV }}" > "$TEMP_ENV"
 
-            # Run new container
+            # Run new versioned container
             sudo docker run -d \
-              --name myapp \
+              --name $CONTAINER_NAME \
               --network host \
               --env-file "$TEMP_ENV" \
               -v /home/najam/S3bucket:/home/najam/S3bucket \
-              $IMAGE_URI || { echo "❌ Container failed to start"; exit 1; }
+              $IMAGE_URI
 
             rm -f "$TEMP_ENV"
-            echo "✅ Deployment complete!"
+            echo "✅ Deployed new container: $CONTAINER_NAME using $IMAGE_TAG"
