@@ -84,44 +84,66 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_KEY }}
           script: |
+            set -e  # stop on first error for debugging
+
             AWS_REGION=${{ secrets.AWS_REGION }}
             AWS_ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}
             ECR_REPOSITORY=devqa
             IMAGE_TAG=${{ env.IMAGE_TAG }}
+
+            if [ -z "$IMAGE_TAG" ]; then
+              echo "❌ IMAGE_TAG not found. Something went wrong in the build step."
+              exit 1
+            fi
+
             IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
             CONTAINER_NAME=myapp_$IMAGE_TAG
 
-            echo "Deploying container: $CONTAINER_NAME from image: $IMAGE_URI"
+            echo "🚀 Deploying: $IMAGE_URI"
+            echo "🧩 Container name: $CONTAINER_NAME"
 
-            # Login to ECR
-            aws ecr get-login-password --region $AWS_REGION | \
-              sudo docker login --username AWS --password-stdin \
-              $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
-
-            # Pull latest versioned image
-            sudo docker pull $IMAGE_URI
-
-            # Stop old myapp containers (but don't delete)
-            RUNNING=$(sudo docker ps -q --filter "name=myapp")
-            if [ -n "$RUNNING" ]; then
-              echo "Stopping old myapp containers..."
-              sudo docker stop $RUNNING
+            # Ensure AWS CLI is available
+            if ! command -v aws &> /dev/null; then
+              echo "Installing awscli..."
+              sudo apt-get update -y && sudo apt-get install -y awscli
             fi
 
-            # ✅ Old containers are stopped but not removed
-            echo "Old containers retained."
+            # Ensure Docker is running
+            if ! sudo systemctl is-active --quiet docker; then
+              echo "🔄 Starting Docker service..."
+              sudo systemctl start docker
+            fi
 
-            # Create a temporary .env file
+            # Re-login to ECR
+            echo "🔐 Logging in to ECR..."
+            sudo aws ecr get-login-password --region $AWS_REGION | \
+              sudo docker login --username AWS --password-stdin \
+              $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com || {
+                echo "❌ ECR login failed."; exit 1;
+              }
+
+            echo "📦 Pulling image: $IMAGE_URI"
+            sudo docker pull $IMAGE_URI || { echo "❌ Pull failed — check ECR permissions or repo name."; exit 1; }
+
+            echo "🛑 Stopping any running 'myapp' containers..."
+            sudo docker stop $(sudo docker ps -q --filter "name=myapp") || true
+
+            # Create temporary env file
             TEMP_ENV=$(mktemp)
             echo "${{ secrets.ENV }}" > "$TEMP_ENV"
 
-            # Run new versioned container
+            echo "🚀 Starting new container..."
             sudo docker run -d \
               --name $CONTAINER_NAME \
               --network host \
               --env-file "$TEMP_ENV" \
               -v /home/najam/S3bucket:/home/najam/S3bucket \
-              $IMAGE_URI
+              $IMAGE_URI || {
+                echo "❌ Docker run failed."; sudo docker logs $CONTAINER_NAME || true; exit 1;
+              }
 
             rm -f "$TEMP_ENV"
-            echo "✅ Deployed new container: $CONTAINER_NAME using $IMAGE_TAG"
+
+            echo "✅ Successfully deployed $CONTAINER_NAME"
+            echo "Currently running containers:"
+            sudo docker ps
