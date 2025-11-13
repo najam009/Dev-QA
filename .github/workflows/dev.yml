@@ -1,4 +1,4 @@
-name: CI/CD Pipeline for dev 
+name: CI/CD Pipeline for dev
 
 on:
   push:
@@ -21,49 +21,47 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      #- name: Set up Docker Buildx
-     #   uses: docker/setup-buildx-action@v3
-
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
         with:
           registry-type: private
 
+      - name: Get next image version tag
+        id: get-tag
+        run: |
+          echo "Fetching existing image tags..."
+          EXISTING_TAGS=$(aws ecr list-images \
+            --repository-name $ECR_REPOSITORY \
+            --region $AWS_REGION \
+            --query 'imageIds[*].imageTag' \
+            --output text)
+
+          echo "Existing tags: $EXISTING_TAGS"
+
+          # Filter only dev tags and find max numeric suffix
+          LATEST_NUM=$(echo "$EXISTING_TAGS" | grep -oE 'dev[0-9]+' | grep -oE '[0-9]+' | sort -n | tail -1)
+          if [ -z "$LATEST_NUM" ]; then
+            NEXT_TAG="dev1"
+          else
+            NEXT_NUM=$((LATEST_NUM + 1))
+            NEXT_TAG="dev${NEXT_NUM}"
+          fi
+
+          echo "Next image tag: $NEXT_TAG"
+          echo "IMAGE_TAG=$NEXT_TAG" >> $GITHUB_ENV
+
       - name: Build Docker image
         run: |
-          docker build -t $ECR_REPOSITORY:dev .
+          docker build -t $ECR_REPOSITORY:$IMAGE_TAG .
 
       - name: Tag and Push Docker image
         id: push-image
         run: |
-          IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:dev
-          docker tag $ECR_REPOSITORY:dev $IMAGE_URI
+          IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:$IMAGE_TAG
+          docker tag $ECR_REPOSITORY:$IMAGE_TAG $IMAGE_URI
           docker push $IMAGE_URI
           echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
-#
- # promote-to-qa:
-  #  name: Promote dev → qa
-   # runs-on: ubuntu-latest
-    #needs: build-and-push
-
- #   steps:
-  #    - name: Checkout code
-   #     uses: actions/checkout@v4
-    #    with:
-     #     fetch-depth: 0
-#
- #     - name: Configure Git
-  #      run: |
-   #       git config user.name "github-actions"
-    #      git config user.email "github-actions@github.com"
-#
- #     - name: Merge dev into qa
-  #      run: |
-   #       git fetch origin
-    #      git checkout qa
-     #     git merge origin/dev --no-edit
-      #    git push origin qa
 
   deploy-to-ec2:
     name: Deploy Docker container on EC2
@@ -83,15 +81,20 @@ jobs:
               sudo docker login --username AWS --password-stdin \
               ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
 
-            # Pull and restart container
-            IMAGE_URI=633458675961.dkr.ecr.ap-south-1.amazonaws.com/devqa:dev
-            sudo docker pull $IMAGE_URI
+            # Use image tag from build job
+            IMAGE_URI=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+
+            echo "Deploying image: $IMAGE_URI"
+
+            # Stop running container (don't delete old images)
             sudo docker stop myapp || true
             sudo docker rm myapp || true
 
             # ✅ Create a temporary .env file for runtime-only credentials
             TEMP_ENV=$(mktemp)
             echo "${{ secrets.ENV }}" > "$TEMP_ENV"
+
+            sudo docker pull $IMAGE_URI
 
             sudo docker run -d \
               --name myapp \
@@ -102,3 +105,5 @@ jobs:
 
             # Delete temporary .env file immediately after container starts
             rm -f "$TEMP_ENV"
+
+            echo "Deployment complete: $IMAGE_URI"
