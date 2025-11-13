@@ -39,7 +39,7 @@ jobs:
 
           echo "Existing tags: $EXISTING_TAGS"
 
-          # Filter only dev tags and find max numeric suffix
+          # Find last dev image tag
           LATEST_NUM=$(echo "$EXISTING_TAGS" | grep -oE 'dev[0-9]+' | grep -oE '[0-9]+' | sort -n | tail -1)
           if [ -z "$LATEST_NUM" ]; then
             NEXT_TAG="dev1"
@@ -76,34 +76,47 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_KEY }}
           script: |
+            AWS_REGION=${{ secrets.AWS_REGION }}
+            AWS_ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}
+            ECR_REPOSITORY=${{ secrets.ECR_REPOSITORY }}
+            IMAGE_TAG=${{ env.IMAGE_TAG }}
+
             # Login to ECR
-            aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | \
+            aws ecr get-login-password --region $AWS_REGION | \
               sudo docker login --username AWS --password-stdin \
-              ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+              $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
 
-            # Use image tag from build job
-            IMAGE_URI=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+            IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
+            CONTAINER_NAME=myapp_$IMAGE_TAG
 
-            echo "Deploying image: $IMAGE_URI"
+            echo "Deploying new container: $CONTAINER_NAME using $IMAGE_URI"
 
-            # Stop running container (don't delete old images)
-            sudo docker stop myapp || true
-            sudo docker rm myapp || true
+            # Pull latest image
+            sudo docker pull $IMAGE_URI
 
-            # ✅ Create a temporary .env file for runtime-only credentials
+            # Stop any running container with the base name "myapp"
+            RUNNING=$(sudo docker ps -q --filter "name=myapp")
+            if [ -n "$RUNNING" ]; then
+              echo "Stopping running containers..."
+              sudo docker stop $RUNNING
+            fi
+
+            # ✅ Do NOT remove old containers — just stop them
+
+            # Create a temporary .env file
             TEMP_ENV=$(mktemp)
             echo "${{ secrets.ENV }}" > "$TEMP_ENV"
 
-            sudo docker pull $IMAGE_URI
-
+            # Run new container with unique name
             sudo docker run -d \
-              --name myapp \
+              --name $CONTAINER_NAME \
               --network host \
               --env-file "$TEMP_ENV" \
               -v /home/najam/S3bucket:/home/najam/S3bucket \
               $IMAGE_URI
 
-            # Delete temporary .env file immediately after container starts
+            # Clean up .env
             rm -f "$TEMP_ENV"
 
-            echo "Deployment complete: $IMAGE_URI"
+            echo "✅ Deployed new container: $CONTAINER_NAME"
+            echo "All previous containers remain stopped."
